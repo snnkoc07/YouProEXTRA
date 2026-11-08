@@ -4,6 +4,31 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+@interface YTPlayerViewController : UIViewController
+- (float)playbackRate;
+- (void)didActivateVideo:(id)video;
+- (void)currentVideoTimeDidChange:(id)time;
+@end
+
+@interface YTReelPlaybackViewController : UIViewController
+@end
+
+@interface YTReelPlayerViewController : UIViewController
+@end
+
+@interface YTShortsPlayerViewController : UIViewController
+@end
+
+@interface YTReelWatchRootViewController : UIViewController
+@end
+
+@interface YTPDownloader : NSObject
+- (void)downloadDidFinish:(id)task fileName:(NSString *)fileName;
+- (void)downloadDidFailureWithError:(NSError *)error;
+- (void)startDownloadFor:(id)arg1 fileName:(NSString *)fileName text:(id)arg3;
+- (void)updateProgressForID:(NSString *)recordID received:(int64_t)received total:(int64_t)total;
+@end
+
 #pragma mark - Shorts Speed (1.75x)
 
 static const float kTargetShortsSpeed = 1.75f;
@@ -213,7 +238,7 @@ static void ShowInAppNotice(NSString *message, NSTimeInterval duration) {
 static void PostDownloadNotification(NSString *title, NSString *body, NSString *identifier) {
     RequestNotificationPermissionsIfNeeded();
 
-    // 1. Her zaman ekranın üstünde görsel bildirim kutusu göster
+    // 1. Ekranın üstünde görsel bildirim kutusu göster
     NSString *inAppText = [NSString stringWithFormat:@"%@\n%@", title, body];
     ShowInAppNotice(inAppText, 2.5);
 
@@ -235,19 +260,21 @@ static void PostDownloadNotification(NSString *title, NSString *body, NSString *
 
 - (void)didActivateVideo:(id)video {
     %orig;
-    if (IsShortsController(self)) {
-        ScheduleSpeedPriming(self);
+    id ctrl = (id)self;
+    if (IsShortsController(ctrl)) {
+        ScheduleSpeedPriming(ctrl);
     }
 }
 
 - (void)currentVideoTimeDidChange:(id)time {
     %orig;
-    if (IsShortsController(self)) {
+    id ctrl = (id)self;
+    if (IsShortsController(ctrl)) {
         SEL getter = NSSelectorFromString(@"playbackRate");
-        if ([self respondsToSelector:getter]) {
-            float rate = ((float (*)(id, SEL))objc_msgSend)(self, getter);
+        if ([ctrl respondsToSelector:getter]) {
+            float rate = ((float (*)(id, SEL))objc_msgSend)(ctrl, getter);
             if (fabs(rate - 1.0f) < 0.05f) {
-                PrimeSpeedForShorts(self);
+                PrimeSpeedForShorts(ctrl);
             }
         }
     }
@@ -316,7 +343,6 @@ static void PostDownloadNotification(NSString *title, NSString *body, NSString *
     %orig;
     if (total > 0) {
         int percent = (int)((received * 100) / total);
-        // Her %25'lik dilimde veya başlangıçta hafif in-app durum güncellemesi ver
         if (percent == 25 || percent == 50 || percent == 75) {
             static int lastPercent = 0;
             if (lastPercent != percent) {
@@ -325,16 +351,6 @@ static void PostDownloadNotification(NSString *title, NSString *body, NSString *
             }
         }
     }
-}
-
-%end
-
-#pragma mark - UNUserNotificationCenter Foreground Presentation
-
-%hook UNUserNotificationCenter
-
-- (void)setDelegate:(id<UNUserNotificationCenterDelegate>)delegate {
-    %orig;
 }
 
 %end
