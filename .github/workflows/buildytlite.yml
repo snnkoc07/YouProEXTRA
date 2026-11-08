@@ -380,6 +380,12 @@ jobs:
           cd PleaseDontStopTheMusic
           make -C rootless clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless ARCHS=arm64
           mv rootless/packages/*.deb ${{ github.workspace }}/pleasedontstopthemusic.deb
+
+      - name: Build ShortsSpeed
+        run: |
+          cd ${{ github.workspace }}/Tweaks/ShortsSpeed
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb ${{ github.workspace }}/shortsspeed.deb
           
       - name: Inject Tweaks Into IPA
         run: |

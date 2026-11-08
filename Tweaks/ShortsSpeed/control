@@ -1,0 +1,8 @@
+Package: com.snnkoc07.shortsspeed
+Name: ShortsSpeed
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Sets default YouTube Shorts playback speed to 1.75x
+Maintainer: snnkoc07
+Author: snnkoc07
+Section: Tweaks
