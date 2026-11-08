@@ -260,7 +260,7 @@ jobs:
 
       - name: Clone and Build YTKACE
         run: |
-          git clone --quiet --depth=1 https://github.com/itzzace/ytkace.git
+          git clone --quiet --depth=1 https://github.com/snnkoc07/ytkace.git
           cd ytkace
           echo "YTKACE_VERSION=$(grep '^Version:' control 2>/dev/null | awk '{print $2}' || grep '^Version:' DEBIAN/control | awk '{print $2}')" >> $GITHUB_ENV
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
