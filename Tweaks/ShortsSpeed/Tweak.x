@@ -244,11 +244,18 @@ static void PostSystemNotification(NSString *title, NSString *body, NSString *id
     if (withSound) {
         content.sound = [UNNotificationSound defaultSound];
     }
+    if (@available(iOS 15.0, *)) {
+        content.interruptionLevel = UNNotificationInterruptionLevelActive;
+    }
 
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                           content:content
                                                                           trigger:nil];
-    [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:nil];
+    [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error) {
+        if (error) {
+            NSLog(@"[ShortsSpeed] Notification error: %@", error);
+        }
+    }];
 }
 
 static void PostDownloadNotification(NSString *title, NSString *body, NSString *identifier) {
@@ -448,6 +455,67 @@ static void ClearProgressNotification(void) {
     NSString *body = [NSString stringWithFormat:@"Hız: %@ • %@", speedStr, sizeStr];
 
     // Uygulama dışındayken (veya içindeyken) bildirim merkezinde tek bir bildirimi sessizce güncelle
+    PostSystemNotification(title, body, @"ytp.download.progress", NO);
+}
+
+%end
+
+%hook YTPDownloadsDB
+
+- (void)updateProgressForID:(id)downloadID received:(int64_t)received total:(int64_t)total {
+    %orig;
+    if (total <= 0 || received < 0) return;
+
+    NSString *key = downloadID ? [NSString stringWithFormat:@"db_%@", downloadID] : @"db_default";
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    double speed = 0.0;
+    BOOL shouldNotify = NO;
+
+    NSMutableDictionary *states = DownloadProgressState();
+    @synchronized(states) {
+        NSMutableDictionary *state = states[key];
+        if (!state) {
+            state = [NSMutableDictionary dictionaryWithDictionary:@{
+                @"lastTime": @(now),
+                @"lastReceived": @(received),
+                @"lastNotifiedTime": @(0.0),
+                @"speed": @(0.0)
+            }];
+            states[key] = state;
+        }
+
+        CFAbsoluteTime lastTime = [state[@"lastTime"] doubleValue];
+        int64_t lastReceived = [state[@"lastReceived"] longLongValue];
+        CFAbsoluteTime lastNotifiedTime = [state[@"lastNotifiedTime"] doubleValue];
+        double prevSpeed = [state[@"speed"] doubleValue];
+
+        double dt = now - lastTime;
+        if (dt >= 0.5 && received >= lastReceived) {
+            double instantSpeed = (double)(received - lastReceived) / dt;
+            speed = (prevSpeed > 0.0) ? (prevSpeed * 0.5 + instantSpeed * 0.5) : instantSpeed;
+            state[@"lastTime"] = @(now);
+            state[@"lastReceived"] = @(received);
+            state[@"speed"] = @(speed);
+        } else {
+            speed = prevSpeed;
+        }
+
+        if ((now - lastNotifiedTime) >= 1.5 || received >= total) {
+            state[@"lastNotifiedTime"] = @(now);
+            shouldNotify = YES;
+        }
+    }
+
+    if (!shouldNotify) return;
+
+    int percent = (int)((received * 100) / total);
+    if (percent > 100) percent = 100;
+
+    NSString *speedStr = FormatSpeed(speed);
+    NSString *sizeStr = [NSString stringWithFormat:@"%@ / %@", FormatBytes(received), FormatBytes(total)];
+    NSString *title = [NSString stringWithFormat:@"İndiriliyor (%%%d)", percent];
+    NSString *body = [NSString stringWithFormat:@"Hız: %@ • %@", speedStr, sizeStr];
+
     PostSystemNotification(title, body, @"ytp.download.progress", NO);
 }
 
