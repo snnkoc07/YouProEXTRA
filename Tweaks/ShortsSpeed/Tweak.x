@@ -235,23 +235,51 @@ static void ShowInAppNotice(NSString *message, NSTimeInterval duration) {
     });
 }
 
-static void PostDownloadNotification(NSString *title, NSString *body, NSString *identifier) {
+static void PostSystemNotification(NSString *title, NSString *body, NSString *identifier, BOOL withSound) {
     RequestNotificationPermissionsIfNeeded();
 
-    // 1. Ekranın üstünde görsel bildirim kutusu göster
-    NSString *inAppText = [NSString stringWithFormat:@"%@\n%@", title, body];
-    ShowInAppNotice(inAppText, 2.5);
-
-    // 2. iOS sistem bildirim merkezine yerel bildirim gönder
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = title;
     content.body = body;
-    content.sound = [UNNotificationSound defaultSound];
+    if (withSound) {
+        content.sound = [UNNotificationSound defaultSound];
+    }
 
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                           content:content
                                                                           trigger:nil];
     [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:nil];
+}
+
+static void PostDownloadNotification(NSString *title, NSString *body, NSString *identifier) {
+    // 1. Uygulama açıksa ekranın üstünde görsel bildirim kutusu göster
+    if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+        NSString *inAppText = [NSString stringWithFormat:@"%@\n%@", title, body];
+        ShowInAppNotice(inAppText, 2.5);
+    }
+
+    // 2. iOS sistem bildirim merkezine yerel bildirim gönder (arka planda da görünür)
+    PostSystemNotification(title, body, identifier, YES);
+}
+
+static NSString *FormatBytes(int64_t bytes) {
+    if (bytes < 1024) {
+        return [NSString stringWithFormat:@"%lld B", bytes];
+    } else if (bytes < 1024 * 1024) {
+        return [NSString stringWithFormat:@"%.0f KB", (double)bytes / 1024.0];
+    } else if (bytes < 1024 * 1024 * 1024) {
+        return [NSString stringWithFormat:@"%.1f MB", (double)bytes / (1024.0 * 1024.0)];
+    } else {
+        return [NSString stringWithFormat:@"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0)];
+    }
+}
+
+static NSString *FormatSpeed(double bytesPerSec) {
+    if (bytesPerSec <= 0.0) return @"0 KB/s";
+    if (bytesPerSec < 1024.0 * 1024.0) {
+        return [NSString stringWithFormat:@"%.0f KB/s", bytesPerSec / 1024.0];
+    }
+    return [NSString stringWithFormat:@"%.1f MB/s", bytesPerSec / (1024.0 * 1024.0)];
 }
 
 #pragma mark - Hooks
@@ -313,22 +341,48 @@ static void PostDownloadNotification(NSString *title, NSString *body, NSString *
 
 #pragma mark - Hook YTLite Download Manager
 
+static NSMutableDictionary *DownloadProgressState(void) {
+    static NSMutableDictionary *dict = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dict = [NSMutableDictionary new];
+    });
+    return dict;
+}
+
+static void ClearProgressNotification(void) {
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    NSArray *ids = @[@"ytp.download.progress"];
+    [center removeDeliveredNotificationsWithIdentifiers:ids];
+    [center removePendingNotificationRequestsWithIdentifiers:ids];
+}
+
 %hook YTPDownloader
 
 - (void)downloadDidFinish:(id)task fileName:(NSString *)fileName {
     %orig;
+    ClearProgressNotification();
+    @synchronized (DownloadProgressState()) {
+        [DownloadProgressState() removeAllObjects];
+    }
     NSString *name = fileName ?: @"Video";
+    NSString *uniqueId = [NSString stringWithFormat:@"ytp.download.completed.%.0f", CFAbsoluteTimeGetCurrent() * 1000.0];
     PostDownloadNotification(@"YouTube Plus İndirme Tamamlandı",
                              [NSString stringWithFormat:@"%@ başarıyla indirildi.", name],
-                             @"ytp.download.completed");
+                             uniqueId);
 }
 
 - (void)downloadDidFailureWithError:(NSError *)error {
     %orig;
+    ClearProgressNotification();
+    @synchronized (DownloadProgressState()) {
+        [DownloadProgressState() removeAllObjects];
+    }
     NSString *reason = error.localizedDescription ?: @"Bilinmeyen bir hata oluştu";
+    NSString *uniqueId = [NSString stringWithFormat:@"ytp.download.failed.%.0f", CFAbsoluteTimeGetCurrent() * 1000.0];
     PostDownloadNotification(@"YouTube Plus İndirme Başarısız",
                              reason,
-                             @"ytp.download.failed");
+                             uniqueId);
 }
 
 - (void)startDownloadFor:(id)arg1 fileName:(NSString *)fileName text:(id)arg3 {
@@ -336,21 +390,65 @@ static void PostDownloadNotification(NSString *title, NSString *body, NSString *
     NSString *name = fileName ?: @"İçerik";
     PostDownloadNotification(@"YouTube Plus İndirme Başlatıldı",
                              [NSString stringWithFormat:@"%@ indiriliyor...", name],
-                             @"ytp.download.started");
+                             @"ytp.download.progress");
 }
 
 - (void)updateProgressForID:(NSString *)recordID received:(int64_t)received total:(int64_t)total {
     %orig;
-    if (total > 0) {
-        int percent = (int)((received * 100) / total);
-        if (percent == 25 || percent == 50 || percent == 75) {
-            static int lastPercent = 0;
-            if (lastPercent != percent) {
-                lastPercent = percent;
-                ShowInAppNotice([NSString stringWithFormat:@"İndiriliyor: %%%d", percent], 1.2);
-            }
+    if (total <= 0) return;
+
+    NSString *key = recordID.length > 0 ? recordID : @"default";
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    double speed = 0.0;
+    BOOL shouldNotify = NO;
+
+    @synchronized (DownloadProgressState()) {
+        NSMutableDictionary *state = DownloadProgressState()[key];
+        if (!state) {
+            state = [@{
+                @"lastTime": @(now),
+                @"lastReceived": @(received),
+                @"lastNotifiedTime": @(0.0),
+                @"speed": @(0.0)
+            } mutableCopy];
+            DownloadProgressState()[key] = state;
+        }
+
+        CFAbsoluteTime lastTime = [state[@"lastTime"] doubleValue];
+        int64_t lastReceived = [state[@"lastReceived"] longLongValue];
+        CFAbsoluteTime lastNotifiedTime = [state[@"lastNotifiedTime"] doubleValue];
+        double prevSpeed = [state[@"speed"] doubleValue];
+
+        double dt = now - lastTime;
+        if (dt >= 0.5 && received >= lastReceived) {
+            double instantSpeed = (double)(received - lastReceived) / dt;
+            speed = (prevSpeed > 0.0) ? (prevSpeed * 0.5 + instantSpeed * 0.5) : instantSpeed;
+            state[@"lastTime"] = @(now);
+            state[@"lastReceived"] = @(received);
+            state[@"speed"] = @(speed);
+        } else {
+            speed = prevSpeed;
+        }
+
+        // iOS bildirim merkezini yormamak için 1.5 saniyede bir güncelle
+        if ((now - lastNotifiedTime) >= 1.5 || received >= total) {
+            state[@"lastNotifiedTime"] = @(now);
+            shouldNotify = YES;
         }
     }
+
+    if (!shouldNotify) return;
+
+    int percent = (int)((received * 100) / total);
+    if (percent > 100) percent = 100;
+
+    NSString *speedStr = FormatSpeed(speed);
+    NSString *sizeStr = [NSString stringWithFormat:@"%@ / %@", FormatBytes(received), FormatBytes(total)];
+    NSString *title = [NSString stringWithFormat:@"İndiriliyor (%%%d)", percent];
+    NSString *body = [NSString stringWithFormat:@"Hız: %@ • %@", speedStr, sizeStr];
+
+    // Uygulama dışındayken (veya içindeyken) bildirim merkezinde tek bir bildirimi sessizce güncelle
+    PostSystemNotification(title, body, @"ytp.download.progress", NO);
 }
 
 %end
