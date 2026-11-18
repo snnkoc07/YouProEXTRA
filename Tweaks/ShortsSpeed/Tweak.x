@@ -29,9 +29,25 @@
 - (void)updateProgressForID:(NSString *)recordID received:(int64_t)received total:(int64_t)total;
 @end
 
-#pragma mark - Shorts Speed (1.75x)
+#pragma mark - Shorts Speed (Configurable, Default 1.75x)
 
-static const float kTargetShortsSpeed = 1.75f;
+static NSString *const kShortsSpeedDefaultsKey = @"YTP_DefaultShortsSpeed";
+static const NSInteger kShortsSpeedButtonTag = 0x53535044; // "SSPD"
+static __weak id gActiveShortsController = nil;
+
+static float GetTargetShortsSpeed(void) {
+    float saved = [[NSUserDefaults standardUserDefaults] floatForKey:kShortsSpeedDefaultsKey];
+    return (saved > 0.0f) ? saved : 1.75f;
+}
+
+static NSString *FormatSpeedLabel(float speed) {
+    if (fabsf(speed - 1.0f) < 0.01f) return @"1x";
+    if (fabsf(speed - 1.25f) < 0.01f) return @"1.25x";
+    if (fabsf(speed - 1.5f) < 0.01f) return @"1.5x";
+    if (fabsf(speed - 1.75f) < 0.01f) return @"1.75x";
+    if (fabsf(speed - 2.0f) < 0.01f) return @"2x";
+    return [NSString stringWithFormat:@"%.2gx", speed];
+}
 
 static BOOL IsShortsController(id controller) {
     if (!controller) return NO;
@@ -125,13 +141,15 @@ static BOOL SetRateOnHierarchy(id obj, float rate, int depth) {
 
 static void PrimeSpeedForShorts(id controller) {
     if (!controller) return;
-    SetRateOnHierarchy(controller, kTargetShortsSpeed, 0);
+    gActiveShortsController = controller;
+    float targetSpeed = GetTargetShortsSpeed();
+    SetRateOnHierarchy(controller, targetSpeed, 0);
 
     SEL viewSel = NSSelectorFromString(@"view");
     if ([controller respondsToSelector:viewSel]) {
         id view = ((id (*)(id, SEL))objc_msgSend)(controller, viewSel);
         if (view) {
-            SetRateOnHierarchy(view, kTargetShortsSpeed, 0);
+            SetRateOnHierarchy(view, targetSpeed, 0);
         }
     }
 }
@@ -147,6 +165,120 @@ static void ScheduleSpeedPriming(id controller) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         PrimeSpeedForShorts(controller);
     });
+}
+
+@interface YTPShortsSpeedHelper : NSObject
++ (instancetype)shared;
+- (void)speedButtonTapped:(UIButton *)sender;
+@end
+
+@implementation YTPShortsSpeedHelper
+
++ (instancetype)shared {
+    static YTPShortsSpeedHelper *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [YTPShortsSpeedHelper new];
+    });
+    return instance;
+}
+
+- (void)speedButtonTapped:(UIButton *)sender {
+    UIViewController *presenter = nil;
+    UIResponder *responder = sender;
+    while (responder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            presenter = (UIViewController *)responder;
+            break;
+        }
+        responder = responder.nextResponder;
+    }
+    if (!presenter) {
+        for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if ([scene isKindOfClass:UIWindowScene.class] && scene.activationState == UISceneActivationStateForegroundActive) {
+                for (UIWindow *win in scene.windows) {
+                    if (win.isKeyWindow) {
+                        presenter = win.rootViewController;
+                        break;
+                    }
+                }
+            }
+            if (presenter) break;
+        }
+    }
+    while (presenter.presentedViewController) {
+        presenter = presenter.presentedViewController;
+    }
+    if (!presenter) return;
+
+    float current = GetTargetShortsSpeed();
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Shorts Hızı"
+                                                                   message:[NSString stringWithFormat:@"Varsayılan: %@", FormatSpeedLabel(current)]
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    const float options[] = {1.0f, 1.25f, 1.5f, 1.75f, 2.0f};
+    for (size_t i = 0; i < sizeof(options) / sizeof(options[0]); i++) {
+        float val = options[i];
+        NSString *label = FormatSpeedLabel(val);
+        if (fabsf(val - current) < 0.01f) {
+            label = [NSString stringWithFormat:@"✓ %@", label];
+        }
+        [sheet addAction:[UIAlertAction actionWithTitle:label
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [[NSUserDefaults standardUserDefaults] setFloat:val forKey:kShortsSpeedDefaultsKey];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            [sender setTitle:FormatSpeedLabel(val) forState:UIControlStateNormal];
+            if (gActiveShortsController) {
+                PrimeSpeedForShorts(gActiveShortsController);
+                ScheduleSpeedPriming(gActiveShortsController);
+            }
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"İptal" style:UIAlertActionStyleCancel handler:nil]];
+
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = sender;
+        sheet.popoverPresentationController.sourceRect = sender.bounds;
+    }
+
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+@end
+
+static void EnsureShortsSpeedButton(UIViewController *vc) {
+    if (!vc || !vc.view) return;
+    UIView *host = vc.view;
+    UIButton *existing = (UIButton *)[host viewWithTag:kShortsSpeedButtonTag];
+    if (existing) {
+        [existing setTitle:FormatSpeedLabel(GetTargetShortsSpeed()) forState:UIControlStateNormal];
+        [host bringSubviewToFront:existing];
+        return;
+    }
+
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.tag = kShortsSpeedButtonTag;
+    btn.translatesAutoresizingMaskIntoConstraints = NO;
+    btn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+    [btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    [btn setTitle:FormatSpeedLabel(GetTargetShortsSpeed()) forState:UIControlStateNormal];
+    btn.layer.cornerRadius = 18.0;
+    btn.layer.masksToBounds = YES;
+    btn.layer.borderWidth = 1.0;
+    btn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.28].CGColor;
+    [btn addTarget:[YTPShortsSpeedHelper shared] action:@selector(speedButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    [host addSubview:btn];
+    [NSLayoutConstraint activateConstraints:@[
+        [btn.trailingAnchor constraintEqualToAnchor:host.safeAreaLayoutGuide.trailingAnchor constant:-10.0],
+        [btn.centerYAnchor constraintEqualToAnchor:host.centerYAnchor constant:-105.0],
+        [btn.widthAnchor constraintEqualToConstant:48.0],
+        [btn.heightAnchor constraintEqualToConstant:36.0]
+    ]];
+    [host bringSubviewToFront:btn];
 }
 
 #pragma mark - Download Notifications (Banner & In-App Notice)
@@ -329,6 +461,7 @@ static NSString *FormatSpeed(double bytesPerSec) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
 }
 %end
 
@@ -336,6 +469,7 @@ static NSString *FormatSpeed(double bytesPerSec) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
 }
 %end
 
