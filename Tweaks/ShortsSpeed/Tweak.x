@@ -430,6 +430,11 @@ static NSString *FormatSpeed(double bytesPerSec) {
     id ctrl = (id)self;
     if (IsShortsController(ctrl)) {
         ScheduleSpeedPriming(ctrl);
+        if ([ctrl isKindOfClass:UIViewController.class]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                EnsureShortsSpeedButton((UIViewController *)ctrl);
+            });
+        }
     }
 }
 
@@ -454,11 +459,22 @@ static NSString *FormatSpeed(double bytesPerSec) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
 }
 %end
 
 %hook YTReelPlayerViewController
 - (void)viewDidLayoutSubviews {
+    %orig;
+    ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
+}
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
     ScheduleSpeedPriming(self);
     EnsureShortsSpeedButton((UIViewController *)self);
@@ -471,12 +487,23 @@ static NSString *FormatSpeed(double bytesPerSec) {
     ScheduleSpeedPriming(self);
     EnsureShortsSpeedButton((UIViewController *)self);
 }
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
+}
 %end
 
 %hook YTReelWatchRootViewController
 - (void)viewDidLayoutSubviews {
     %orig;
     ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    ScheduleSpeedPriming(self);
+    EnsureShortsSpeedButton((UIViewController *)self);
 }
 %end
 
